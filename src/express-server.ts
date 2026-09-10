@@ -14,8 +14,11 @@ import { logger } from "@/api/logger";
 import { createApiRouter } from "@/api/express-router";
 
 const app = express();
+const port = Number(process.env.PORT || process.env.API_PORT || 3001);
 
-const port = Number(process.env["API_PORT"] ?? 3001);
+app.listen(port, "0.0.0.0", () => {
+  logger.info("express_api_started", { port });
+});
 
 const allowedOrigins = (process.env["CORS_ORIGIN"] ?? "")
 .split(",")

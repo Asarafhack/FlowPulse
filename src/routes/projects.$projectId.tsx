@@ -13,60 +13,118 @@ import type { Task } from "@/lib/types";
 import { errorMessage } from "@/lib/api-client";
 
 export const Route = createFileRoute("/projects/$projectId")({
-  component: Detail,
+  component: ProjectDetailsPage,
 });
 
-const taskStatuses = [
-  ["Pending", "Pending"],
-  ["In Progress", "In Progress"],
-  ["Completed", "Completed"],
-] as const;
+const taskStatuses = ["Pending", "In Progress", "Completed"] as const;
+const taskPriorities = ["Low", "Medium", "High"] as const;
 
-const taskPriorities = [
-  ["Low", "Low"],
-  ["Medium", "Medium"],
-  ["High", "High"],
-] as const;
+type TaskStatusValue = (typeof taskStatuses)[number];
+type TaskPriorityValue = (typeof taskPriorities)[number];
 
-function Detail() {
+function ProjectDetailsPage() {
   const { projectId } = Route.useParams();
 
   const projectQuery = useProject(projectId);
 
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("ALL");
-  const [priority, setPriority] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [priorityFilter, setPriorityFilter] = useState("ALL");
 
-  const [editing, setEditing] = useState<Task | null>(null);
-  const [open, setOpen] = useState(false);
-
-  const [form, setForm] = useState({
-    title: "",
-    description: "",
-    priority: "Medium",
-    status: "Pending",
-    dueDate: "",
-  });
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
 
   const taskQuery = useTasks({
     projectId,
-    search,
-    status,
-    priority,
-    limit: 100,
+    search: search || undefined,
+    status: statusFilter,
+    priority: priorityFilter,
   });
 
-  const create = useCreateTask();
-  const update = useUpdateTask();
-  const del = useDeleteTask();
+  const createTask = useCreateTask();
+  const updateTask = useUpdateTask();
+  const deleteTask = useDeleteTask();
 
-  /* --------------------------------
-     RESET FORM
-  -------------------------------- */
+  const [taskForm, setTaskForm] = useState({
+    name: "",
+    description: "",
+    priority: "Medium" as TaskPriorityValue,
+    status: "Pending" as TaskStatusValue,
+    dueDate: "",
+  });
 
-  const resetForm = () => {
-    setForm({
-      title: "",
+  /*
+   * Convert API date into the format required by <input type="date">
+   */
+  const formatDateForInput = (value?: string | null) => {
+    if (!value) return "";
+
+    return value.includes("T")
+      ? value.substring(0, 10)
+      : value.substring(0, 10);
+  };
+
+  /*
+   * Convert HTML date input:
+   *
+   * 2026-09-18
+   *
+   * into ISO datetime:
+   *
+   * 2026-09-17T18:30:00.000Z
+   *
+   * This is important because the backend stores due_date as a timestamp.
+   */
+  const toIsoDate = (value: string) => {
+    if (!value) return null;
+
+    const date = new Date(`${value}T00:00:00`);
+
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+
+    return date.toISOString();
+  };
+
+  const openCreateTask = () => {
+    setEditingTask(null);
+
+    setTaskForm({
+      name: "",
+      description: "",
+      priority: "Medium",
+      status: "Pending",
+      dueDate: "",
+    });
+
+    setTaskDialogOpen(true);
+  };
+
+  const openEditTask = (task: Task) => {
+    setEditingTask(task);
+
+    setTaskForm({
+      name: task.name ?? "",
+      description: task.description ?? "",
+      priority: (task.priority ?? "Medium") as TaskPriorityValue,
+      status: (task.status ?? "Pending") as TaskStatusValue,
+      dueDate: formatDateForInput(task.dueDate),
+    });
+
+    setTaskDialogOpen(true);
+  };
+
+  const closeTaskDialog = () => {
+    if (createTask.isPending || updateTask.isPending) {
+      return;
+    }
+
+    setTaskDialogOpen(false);
+    setEditingTask(null);
+
+    setTaskForm({
+      name: "",
       description: "",
       priority: "Medium",
       status: "Pending",
@@ -74,92 +132,53 @@ function Detail() {
     });
   };
 
-  /* --------------------------------
-     OPEN CREATE TASK
-  -------------------------------- */
-
-  const openCreateTask = () => {
-    setEditing(null);
-    resetForm();
-    setOpen(true);
-  };
-
-  /* --------------------------------
-     OPEN EDIT TASK
-  -------------------------------- */
-
-  const openEditTask = (task: Task) => {
-    setEditing(task);
-
-    setForm({
-      title: task.title ?? "",
-      description: task.description ?? "",
-      priority: task.priority ?? "Medium",
-      status: task.status ?? "Pending",
-      dueDate: task.dueDate ? task.dueDate.substring(0, 10) : "",
-    });
-
-    setOpen(true);
-  };
-
-  /* --------------------------------
-     CLOSE MODAL
-  -------------------------------- */
-
-  const closeModal = () => {
-    if (create.isPending || update.isPending) return;
-
-    setOpen(false);
-    setEditing(null);
-    resetForm();
-  };
-
-  /* --------------------------------
-     SAVE TASK
-  -------------------------------- */
-
-  const save = async (event: React.FormEvent<HTMLFormElement>) => {
+  const saveTask = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    const title = form.title.trim();
+    const name = taskForm.name.trim();
+    const description = taskForm.description.trim();
 
-    if (!title) {
+    if (!name) {
       alert("Task name is required.");
       return;
     }
 
     try {
+      /*
+       * IMPORTANT:
+       * Backend expects "name", not "title".
+       *
+       * Backend also expects dueDate as an ISO datetime.
+       */
       const input = {
-        projectId,
-        title,
-        description: form.description.trim() || null,
-        priority: form.priority,
-        status: form.status,
-        dueDate: form.dueDate || null,
+        name,
+        description: description || null,
+        priority: taskForm.priority,
+        status: taskForm.status,
+        dueDate: toIsoDate(taskForm.dueDate),
       };
 
-      if (editing) {
-        await update.mutateAsync({
-          id: editing.id,
+      if (editingTask) {
+        await updateTask.mutateAsync({
+          id: editingTask.id,
           input,
         });
       } else {
-        await create.mutateAsync(input);
+        await createTask.mutateAsync({
+          ...input,
+          projectId,
+        });
       }
 
-      closeModal();
+      closeTaskDialog();
     } catch (error) {
       alert(errorMessage(error));
     }
   };
 
-  /* --------------------------------
-     MARK COMPLETED / PENDING
-  -------------------------------- */
-
   const toggleCompleted = async (task: Task) => {
     try {
-      await update.mutateAsync({
+      await updateTask.mutateAsync({
         id: task.id,
         input: {
           status:
@@ -173,57 +192,71 @@ function Detail() {
     }
   };
 
-  /* --------------------------------
-     DELETE TASK
-  -------------------------------- */
-
-  const deleteTask = async (taskId: string) => {
+  const handleDeleteTask = async (task: Task) => {
     const confirmed = window.confirm(
-      "Are you sure you want to delete this task?",
+      `Delete task "${task.name}"?`,
     );
 
-    if (!confirmed) return;
+    if (!confirmed) {
+      return;
+    }
 
     try {
-      await del.mutateAsync(taskId);
+      await deleteTask.mutateAsync(task.id);
     } catch (error) {
       alert(errorMessage(error));
     }
   };
 
-  /* --------------------------------
-     PROJECT LOADING
-  -------------------------------- */
+  /*
+   * API can return either:
+   *
+   *   [...]
+   *
+   * or:
+   *
+   *   { items: [...] }
+   */
+  const taskResponse = taskQuery.data;
+
+  const tasks: Task[] = Array.isArray(taskResponse)
+    ? taskResponse
+    : Array.isArray((taskResponse as any)?.items)
+      ? (taskResponse as any).items
+      : [];
 
   if (projectQuery.isLoading) {
     return (
       <Protected>
-        <div className="rounded-xl border bg-white p-10 text-center text-slate-500">
-          Loading project...
+        <div className="flex min-h-[60vh] items-center justify-center">
+          <div className="rounded-xl border bg-white px-8 py-6 text-sm text-slate-500 shadow-sm">
+            Loading project...
+          </div>
         </div>
       </Protected>
     );
   }
 
-  /* --------------------------------
-     PROJECT ERROR
-  -------------------------------- */
-
   if (projectQuery.isError || !projectQuery.data) {
     return (
       <Protected>
-        <div className="space-y-4">
-          <Link
-            to="/projects"
-            className="text-sm font-medium underline"
-          >
-            ← Back to projects
-          </Link>
+        <div className="flex min-h-[60vh] items-center justify-center">
+          <div className="max-w-md rounded-xl border bg-white p-8 text-center shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-900">
+              Project not found
+            </h2>
 
-          <div className="rounded-xl border border-red-200 bg-red-50 p-10 text-center text-red-700">
-            <p className="font-semibold">
-              Project not found or access denied.
+            <p className="mt-2 text-sm text-slate-500">
+              We couldn't load this project. It may have been
+              deleted or you may not have access to it.
             </p>
+
+            <Link
+              to="/projects"
+              className="mt-5 inline-flex rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              Back to Projects
+            </Link>
           </div>
         </div>
       </Protected>
@@ -232,590 +265,541 @@ function Detail() {
 
   const project = projectQuery.data;
 
-  const taskData = taskQuery.data as
-    | { items?: Task[] }
-    | Task[]
-    | undefined;
-
-  const tasks = Array.isArray(taskData)
-    ? taskData
-    : taskData?.items ?? [];
-
   return (
     <Protected>
       <div className="space-y-6">
-
-        {/* --------------------------------
-            BACK TO PROJECTS
-        -------------------------------- */}
-
-        <Link
-          to="/projects"
-          className="inline-flex text-sm font-medium text-slate-700 underline hover:text-slate-900"
-        >
-          ← Back to projects
-        </Link>
-
-        {/* --------------------------------
-            PROJECT INFORMATION
-        -------------------------------- */}
-
-        <div className="rounded-xl border bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-slate-900">
-                {project.name}
-              </h1>
-
-              <p className="mt-2 text-slate-500">
-                {project.description ||
-                  "No description provided."}
-              </p>
-            </div>
-
-            <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-              {project.status}
-            </span>
-          </div>
-
-          <div className="mt-6 grid gap-4 text-sm sm:grid-cols-3">
-            <div>
-              <span className="text-slate-500">
-                Start
-              </span>
-
-              <div className="font-medium text-slate-900">
-                {project.startDate || "—"}
-              </div>
-            </div>
-
-            <div>
-              <span className="text-slate-500">
-                End
-              </span>
-
-              <div className="font-medium text-slate-900">
-                {project.endDate || "—"}
-              </div>
-            </div>
-
-            <div>
-              <span className="text-slate-500">
-                Created
-              </span>
-
-              <div className="font-medium text-slate-900">
-                {project.createdAt
-                  ? new Date(
-                      project.createdAt,
-                    ).toLocaleDateString()
-                  : "—"}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* --------------------------------
-            TASK SECTION HEADER
-        -------------------------------- */}
-
-        <div className="rounded-xl border bg-white p-5 shadow-sm">
-
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-
-            <div>
-              <h2 className="text-2xl font-bold text-slate-900">
-                Tasks
-              </h2>
-
-              <p className="mt-1 text-sm text-slate-500">
-                Create and manage tasks for this project.
-              </p>
-            </div>
-
-            {/* MAIN ADD TASK BUTTON */}
-
-            <button
-              type="button"
-              onClick={openCreateTask}
-              className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+        {/* -------------------------------------------------
+            HEADER
+        ------------------------------------------------- */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <Link
+              to="/projects"
+              className="mb-3 inline-flex items-center text-sm text-slate-500 hover:text-slate-900"
             >
-              + Add Task
-            </button>
+              ← Back to Projects
+            </Link>
 
-          </div>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              {project.name}
+            </h1>
 
-          {/* --------------------------------
-              SEARCH AND FILTER
-          -------------------------------- */}
-
-          <div className="mt-5 flex flex-col gap-3 md:flex-row">
-
-            <input
-              value={search}
-              onChange={(event) =>
-                setSearch(event.target.value)
-              }
-              placeholder="Search tasks..."
-              className="flex-1 rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-            />
-
-            <select
-              value={status}
-              onChange={(event) =>
-                setStatus(event.target.value)
-              }
-              className="rounded-lg border border-slate-300 px-3 py-2.5"
-            >
-              <option value="ALL">
-                All statuses
-              </option>
-
-              {taskStatuses.map(
-                ([value, label]) => (
-                  <option
-                    value={value}
-                    key={value}
-                  >
-                    {label}
-                  </option>
-                ),
-              )}
-            </select>
-
-            <select
-              value={priority}
-              onChange={(event) =>
-                setPriority(event.target.value)
-              }
-              className="rounded-lg border border-slate-300 px-3 py-2.5"
-            >
-              <option value="ALL">
-                All priorities
-              </option>
-
-              {taskPriorities.map(
-                ([value, label]) => (
-                  <option
-                    value={value}
-                    key={value}
-                  >
-                    {label}
-                  </option>
-                ),
-              )}
-            </select>
-
-          </div>
-        </div>
-
-        {/* --------------------------------
-            TASK LIST
-        -------------------------------- */}
-
-        {taskQuery.isLoading ? (
-          <div className="rounded-xl border bg-white p-10 text-center text-slate-500">
-            Loading tasks...
-          </div>
-        ) : taskQuery.isError ? (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-red-700">
-            <p className="font-semibold">
-              Unable to load tasks.
+            <p className="mt-1 text-sm text-slate-500">
+              Manage project information and tasks.
             </p>
-
-            <button
-              type="button"
-              onClick={() => taskQuery.refetch()}
-              className="mt-3 rounded-lg border border-red-300 bg-white px-4 py-2 text-sm"
-            >
-              Try again
-            </button>
-          </div>
-        ) : tasks.length === 0 ? (
-
-          /* --------------------------------
-             NO TASKS
-          -------------------------------- */
-
-          <div className="rounded-xl border bg-white p-12 text-center shadow-sm">
-
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-2xl">
-              ✓
-            </div>
-
-            <h3 className="mt-4 text-xl font-bold text-slate-900">
-              No tasks yet
-            </h3>
-
-            <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
-              This project does not have any tasks.
-              Create your first task to start tracking
-              the work.
-            </p>
-
-            <button
-              type="button"
-              onClick={openCreateTask}
-              className="mt-6 rounded-lg bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
-            >
-              + Create Your First Task
-            </button>
-
           </div>
 
-        ) : (
-
-          /* --------------------------------
-             TASK TABLE
-          -------------------------------- */
-
-          <div className="overflow-hidden rounded-xl border bg-white shadow-sm">
-            <div className="overflow-x-auto">
-
-              <table className="w-full text-left text-sm">
-
-                <thead className="border-b bg-slate-50">
-                  <tr>
-                    <th className="px-5 py-3">
-                      Task
-                    </th>
-
-                    <th className="px-5 py-3">
-                      Status
-                    </th>
-
-                    <th className="px-5 py-3">
-                      Priority
-                    </th>
-
-                    <th className="px-5 py-3">
-                      Due Date
-                    </th>
-
-                    <th className="px-5 py-3 text-right">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-
-                <tbody>
-
-                  {tasks.map((task) => (
-                    <tr
-                      key={task.id}
-                      className="border-b last:border-0 hover:bg-slate-50"
-                    >
-
-                      {/* TASK */}
-
-                      <td className="px-5 py-4">
-
-                        <div
-                          className={
-                            task.status ===
-                            "Completed"
-                              ? "font-medium text-slate-400 line-through"
-                              : "font-medium text-slate-900"
-                          }
-                        >
-                          {task.title}
-                        </div>
-
-                        <div className="mt-1 max-w-md truncate text-xs text-slate-500">
-                          {task.description ||
-                            "No description"}
-                        </div>
-
-                      </td>
-
-                      {/* STATUS */}
-
-                      <td className="px-5 py-4">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            toggleCompleted(task)
-                          }
-                          disabled={update.isPending}
-                          className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium hover:bg-slate-200 disabled:opacity-50"
-                        >
-                          {task.status}
-                        </button>
-                      </td>
-
-                      {/* PRIORITY */}
-
-                      <td className="px-5 py-4">
-                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium">
-                          {task.priority}
-                        </span>
-                      </td>
-
-                      {/* DUE DATE */}
-
-                      <td className="px-5 py-4 text-slate-500">
-                        {task.dueDate
-                          ? task.dueDate.substring(
-                              0,
-                              10,
-                            )
-                          : "—"}
-                      </td>
-
-                      {/* ACTIONS */}
-
-                      <td className="px-5 py-4 text-right">
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            openEditTask(task)
-                          }
-                          className="mr-4 underline hover:text-slate-600"
-                        >
-                          Edit
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            deleteTask(task.id)
-                          }
-                          disabled={del.isPending}
-                          className="text-red-600 underline hover:text-red-700 disabled:opacity-50"
-                        >
-                          Delete
-                        </button>
-
-                      </td>
-
-                    </tr>
-                  ))}
-
-                </tbody>
-
-              </table>
-
-            </div>
-          </div>
-        )}
-
-        {/* --------------------------------
-            CREATE / EDIT TASK MODAL
-        -------------------------------- */}
-
-        {open && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) {
-                closeModal();
-              }
-            }}
+          <button
+            type="button"
+            onClick={openCreateTask}
+            className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
           >
+            + Add Task
+          </button>
+        </div>
 
-            <form
-              onSubmit={save}
-              className="w-full max-w-lg space-y-5 rounded-2xl bg-white p-6 shadow-2xl"
-              onMouseDown={(event) =>
-                event.stopPropagation()
-              }
-            >
+        {/* -------------------------------------------------
+            PROJECT INFORMATION
+        ------------------------------------------------- */}
+        <div className="rounded-xl border bg-white p-6 shadow-sm">
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                Status
+              </p>
 
-              {/* MODAL HEADER */}
+              <p className="mt-1 text-sm font-semibold text-slate-900">
+                {project.status}
+              </p>
+            </div>
 
-              <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                Start Date
+              </p>
 
-                <div>
-                  <h2 className="text-2xl font-bold text-slate-900">
-                    {editing
-                      ? "Edit Task"
-                      : "Create Task"}
-                  </h2>
+              <p className="mt-1 text-sm font-semibold text-slate-900">
+                {project.startDate || "—"}
+              </p>
+            </div>
 
-                  <p className="mt-1 text-sm text-slate-500">
-                    {editing
-                      ? "Update this task."
-                      : "Add a new task to this project."}
-                  </p>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                End Date
+              </p>
+
+              <p className="mt-1 text-sm font-semibold text-slate-900">
+                {project.endDate || "—"}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                Created
+              </p>
+
+              <p className="mt-1 text-sm font-semibold text-slate-900">
+                {project.createdAt
+                  ? new Date(project.createdAt).toLocaleDateString()
+                  : "—"}
+              </p>
+            </div>
+          </div>
+
+          {project.description && (
+            <div className="mt-6 border-t pt-5">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                Description
+              </p>
+
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                {project.description}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* -------------------------------------------------
+            TASKS
+        ------------------------------------------------- */}
+        <div className="rounded-xl border bg-white shadow-sm">
+          <div className="border-b p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">
+                  Project Tasks
+                </h2>
+
+                <p className="mt-1 text-sm text-slate-500">
+                  {tasks.length} task
+                  {tasks.length === 1 ? "" : "s"} in this project
+                </p>
+              </div>
+
+              {/* Filters */}
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(event) =>
+                    setSearch(event.target.value)
+                  }
+                  placeholder="Search tasks..."
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                />
+
+                <select
+                  value={statusFilter}
+                  onChange={(event) =>
+                    setStatusFilter(event.target.value)
+                  }
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                >
+                  <option value="ALL">All Statuses</option>
+                  <option value="Pending">Pending</option>
+                  <option value="In Progress">
+                    In Progress
+                  </option>
+                  <option value="Completed">Completed</option>
+                </select>
+
+                <select
+                  value={priorityFilter}
+                  onChange={(event) =>
+                    setPriorityFilter(event.target.value)
+                  }
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                >
+                  <option value="ALL">All Priorities</option>
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Task loading */}
+          {taskQuery.isLoading && (
+            <div className="p-10 text-center text-sm text-slate-500">
+              Loading tasks...
+            </div>
+          )}
+
+          {/* Task error */}
+          {taskQuery.isError && (
+            <div className="p-10 text-center">
+              <p className="text-sm font-medium text-red-600">
+                Unable to load tasks.
+              </p>
+
+              <p className="mt-1 text-xs text-slate-500">
+                {errorMessage(taskQuery.error)}
+              </p>
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!taskQuery.isLoading &&
+            !taskQuery.isError &&
+            tasks.length === 0 && (
+              <div className="p-12 text-center">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-xl">
+                  ✓
                 </div>
+
+                <h3 className="mt-4 text-sm font-semibold text-slate-900">
+                  No tasks found
+                </h3>
+
+                <p className="mt-1 text-sm text-slate-500">
+                  Create your first task for this project.
+                </p>
 
                 <button
                   type="button"
-                  onClick={closeModal}
-                  className="rounded-lg px-3 py-1 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  onClick={openCreateTask}
+                  className="mt-5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
                 >
-                  ×
+                  + Add Task
                 </button>
+              </div>
+            )}
 
+          {/* Task table */}
+          {!taskQuery.isLoading &&
+            !taskQuery.isError &&
+            tasks.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[850px]">
+                  <thead>
+                    <tr className="border-b bg-slate-50 text-left">
+                      <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Task
+                      </th>
+
+                      <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Priority
+                      </th>
+
+                      <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Status
+                      </th>
+
+                      <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Due Date
+                      </th>
+
+                      <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {tasks.map((task) => (
+                      <tr
+                        key={task.id}
+                        className="border-b last:border-b-0 hover:bg-slate-50/70"
+                      >
+                        {/* Task */}
+                        <td className="px-5 py-4">
+                          <div className="flex items-start gap-3">
+                            <input
+                              type="checkbox"
+                              checked={task.status === "Completed"}
+                              onChange={() =>
+                                toggleCompleted(task)
+                              }
+                              disabled={updateTask.isPending}
+                              className="mt-1 h-4 w-4 rounded border-slate-300"
+                            />
+
+                            <div className="min-w-0">
+                              <p
+                                className={`text-sm font-semibold ${
+                                  task.status === "Completed"
+                                    ? "text-slate-400 line-through"
+                                    : "text-slate-900"
+                                }`}
+                              >
+                                {task.name}
+                              </p>
+
+                              {task.description && (
+                                <p className="mt-1 max-w-md truncate text-xs text-slate-500">
+                                  {task.description}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Priority */}
+                        <td className="px-5 py-4">
+                          <span
+                            className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                              task.priority === "High"
+                                ? "bg-red-50 text-red-700"
+                                : task.priority === "Medium"
+                                  ? "bg-amber-50 text-amber-700"
+                                  : "bg-emerald-50 text-emerald-700"
+                            }`}
+                          >
+                            {task.priority}
+                          </span>
+                        </td>
+
+                        {/* Status */}
+                        <td className="px-5 py-4">
+                          <span
+                            className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                              task.status === "Completed"
+                                ? "bg-emerald-50 text-emerald-700"
+                                : task.status === "In Progress"
+                                  ? "bg-blue-50 text-blue-700"
+                                  : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {task.status}
+                          </span>
+                        </td>
+
+                        {/* Due Date */}
+                        <td className="px-5 py-4 text-sm text-slate-600">
+                          {task.dueDate
+                            ? new Date(
+                                task.dueDate,
+                              ).toLocaleDateString()
+                            : "—"}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="px-5 py-4">
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openEditTask(task)
+                              }
+                              className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                            >
+                              Edit
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleDeleteTask(task)
+                              }
+                              disabled={deleteTask.isPending}
+                              className="rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+        </div>
+
+        {/* -------------------------------------------------
+            TASK CREATE / EDIT MODAL
+        ------------------------------------------------- */}
+        {taskDialogOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-xl rounded-2xl bg-white shadow-2xl">
+              <div className="border-b px-6 py-5">
+                <h2 className="text-xl font-semibold text-slate-900">
+                  {editingTask ? "Edit Task" : "New Task"}
+                </h2>
+
+                <p className="mt-1 text-sm text-slate-500">
+                  {editingTask
+                    ? "Update the task details."
+                    : "Add task details for this project."}
+                </p>
               </div>
 
-              {/* TASK NAME */}
+              <form onSubmit={saveTask}>
+                <div className="space-y-5 px-6 py-6">
+                  {/* Task Name */}
+                  <div>
+                    <label
+                      htmlFor="task-name"
+                      className="mb-2 block text-sm font-semibold text-slate-900"
+                    >
+                      Task Name
+                    </label>
 
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Task Name
-                </label>
+                    <input
+                      id="task-name"
+                      type="text"
+                      value={taskForm.name}
+                      onChange={(event) =>
+                        setTaskForm((previous) => ({
+                          ...previous,
+                          name: event.target.value,
+                        }))
+                      }
+                      placeholder="Enter task name"
+                      maxLength={200}
+                      required
+                      className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                    />
+                  </div>
 
-                <input
-                  required
-                  autoFocus
-                  value={form.title}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      title: event.target.value,
-                    })
-                  }
-                  placeholder="Enter task name"
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-                />
-              </div>
+                  {/* Description */}
+                  <div>
+                    <label
+                      htmlFor="task-description"
+                      className="mb-2 block text-sm font-semibold text-slate-900"
+                    >
+                      Description
+                    </label>
 
-              {/* DESCRIPTION */}
+                    <textarea
+                      id="task-description"
+                      value={taskForm.description}
+                      onChange={(event) =>
+                        setTaskForm((previous) => ({
+                          ...previous,
+                          description: event.target.value,
+                        }))
+                      }
+                      placeholder="Describe this task..."
+                      rows={4}
+                      className="w-full resize-none rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                    />
+                  </div>
 
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Description
-                </label>
+                  {/* Priority + Status */}
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label
+                        htmlFor="task-priority"
+                        className="mb-2 block text-sm font-semibold text-slate-900"
+                      >
+                        Priority
+                      </label>
 
-                <textarea
-                  value={form.description}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      description:
-                        event.target.value,
-                    })
-                  }
-                  placeholder="Enter task description"
-                  className="min-h-24 w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-                />
-              </div>
+                      <select
+                        id="task-priority"
+                        value={taskForm.priority}
+                        onChange={(event) =>
+                          setTaskForm((previous) => ({
+                            ...previous,
+                            priority:
+                              event.target.value as TaskPriorityValue,
+                          }))
+                        }
+                        className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                      >
+                        {taskPriorities.map((priority) => (
+                          <option
+                            key={priority}
+                            value={priority}
+                          >
+                            {priority}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-              {/* PRIORITY + STATUS */}
+                    <div>
+                      <label
+                        htmlFor="task-status"
+                        className="mb-2 block text-sm font-semibold text-slate-900"
+                      >
+                        Status
+                      </label>
 
-              <div className="grid gap-4 sm:grid-cols-2">
+                      <select
+                        id="task-status"
+                        value={taskForm.status}
+                        onChange={(event) =>
+                          setTaskForm((previous) => ({
+                            ...previous,
+                            status:
+                              event.target.value as TaskStatusValue,
+                          }))
+                        }
+                        className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                      >
+                        {taskStatuses.map((status) => (
+                          <option
+                            key={status}
+                            value={status}
+                          >
+                            {status}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
 
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Priority
-                  </label>
+                  {/* Due Date */}
+                  <div>
+                    <label
+                      htmlFor="task-due-date"
+                      className="mb-2 block text-sm font-semibold text-slate-900"
+                    >
+                      Due Date
+                    </label>
 
-                  <select
-                    value={form.priority}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        priority:
-                          event.target.value,
-                      })
-                    }
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2.5"
-                  >
-                    {taskPriorities.map(
-                      ([value, label]) => (
-                        <option
-                          value={value}
-                          key={value}
-                        >
-                          {label}
-                        </option>
-                      ),
-                    )}
-                  </select>
+                    <input
+                      id="task-due-date"
+                      type="date"
+                      value={taskForm.dueDate}
+                      onChange={(event) =>
+                        setTaskForm((previous) => ({
+                          ...previous,
+                          dueDate: event.target.value,
+                        }))
+                      }
+                      className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                    />
+                  </div>
                 </div>
 
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                    Status
-                  </label>
-
-                  <select
-                    value={form.status}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        status:
-                          event.target.value,
-                      })
+                {/* Modal footer */}
+                <div className="flex justify-end gap-3 border-t bg-slate-50 px-6 py-4">
+                  <button
+                    type="button"
+                    onClick={closeTaskDialog}
+                    disabled={
+                      createTask.isPending ||
+                      updateTask.isPending
                     }
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2.5"
+                    className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
                   >
-                    {taskStatuses.map(
-                      ([value, label]) => (
-                        <option
-                          value={value}
-                          key={value}
-                        >
-                          {label}
-                        </option>
-                      ),
-                    )}
-                  </select>
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={
+                      createTask.isPending ||
+                      updateTask.isPending
+                    }
+                    className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {createTask.isPending ||
+                    updateTask.isPending
+                      ? "Saving..."
+                      : editingTask
+                        ? "Update Task"
+                        : "Save Task"}
+                  </button>
                 </div>
-
-              </div>
-
-              {/* DUE DATE */}
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Due Date
-                </label>
-
-                <input
-                  type="date"
-                  value={form.dueDate}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      dueDate: event.target.value,
-                    })
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5"
-                />
-              </div>
-
-              {/* BUTTONS */}
-
-              <div className="flex justify-end gap-3 border-t pt-4">
-
-                <button
-                  type="button"
-                  onClick={closeModal}
-                  disabled={
-                    create.isPending ||
-                    update.isPending
-                  }
-                  className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={
-                    create.isPending ||
-                    update.isPending
-                  }
-                  className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {create.isPending ||
-                  update.isPending
-                    ? "Creating..."
-                    : editing
-                      ? "Save Changes"
-                      : "Create Task"}
-                </button>
-
-              </div>
-
-            </form>
-
+              </form>
+            </div>
           </div>
         )}
-
       </div>
     </Protected>
   );
