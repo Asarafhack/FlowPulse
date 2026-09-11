@@ -1,2 +1,0 @@
-import {useEffect} from 'react';import {useNavigate} from '@tanstack/react-router';import {useAuth} from '@/lib/auth';import {AppShell} from './app-shell';
-export function Protected({children}:{children:React.ReactNode}){const {status}=useAuth();const nav=useNavigate();useEffect(()=>{if(status==='anonymous')nav({to:'/login'});},[status,nav]);if(status!=='authenticated')return <div className="grid min-h-screen place-items-center text-sm text-slate-500">Checking session…</div>;return <AppShell>{children}</AppShell>}

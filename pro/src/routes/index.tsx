@@ -1,2 +1,0 @@
-import {createFileRoute,useNavigate} from '@tanstack/react-router'; import {useEffect} from 'react'; import {useAuth} from '@/lib/auth';
-export const Route=createFileRoute('/')({component:Home}); function Home(){const {status}=useAuth();const nav=useNavigate();useEffect(()=>{if(status==='authenticated')nav({to:'/dashboard'});else if(status==='anonymous')nav({to:'/login'});},[status,nav]);return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="text-sm text-slate-500">Loading FlowPulse…</div></div>}
